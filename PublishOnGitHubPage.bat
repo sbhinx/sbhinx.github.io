@@ -1,15 +1,30 @@
 @echo off
-chcp 65001 >nul
-title 正在发布更新到 GitHub Pages...
+setlocal
+cd /d "%~dp0"
+
 echo ========================================================
-echo   正在自动提交最新笔记并同步到 GitHub Pages...
+echo   [PublishOnGitHubPage] Syncing notes to GitHub Pages...
 echo ========================================================
+
 git add .
+git diff-index --quiet HEAD --
+if %ERRORLEVEL% EQU 0 (
+    echo [Info] No new changes detected. Everything is up to date!
+    goto :DONE
+)
+
+echo [Commit] Saving your notes...
 git commit -m "Update notes: %date% %time%"
+
+echo [Push] Pushing to GitHub...
 git push origin main
+
 echo.
 echo ========================================================
-echo   推送完成！GitHub Actions 正在云端自动打包上线。
-echo   大约 1~2 分钟后访问你的主页：https://sbhinx.github.io
+echo   Success! Pushed to GitHub.
+echo   Online site: https://sbhinx.github.io
+echo   (GitHub Actions is building your site now)
 echo ========================================================
-timeout /t 5
+
+:DONE
+echo.
