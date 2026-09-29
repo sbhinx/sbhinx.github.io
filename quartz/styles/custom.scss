@@ -1,3 +1,15 @@
 @use "./variables.scss" as *;
 
-// put your custom CSS here!
+// 自定义页脚：将 Created with Quartz 替换为用户个人版权信息
+footer p {
+  visibility: hidden;
+  position: relative;
+}
+
+footer p::after {
+  visibility: visible;
+  position: absolute;
+  top: 0;
+  left: 0;
+  content: "© 2026 sbhinx";
+}
