@@ -3,28 +3,45 @@ setlocal
 cd /d "%~dp0"
 
 echo ========================================================
-echo   [PublishOnGitHubPage] Syncing notes to GitHub Pages...
+echo   [PublishOnGitHubPage] Syncing notes via PR Mode...
 echo ========================================================
 
-git add .
-git diff-index --quiet HEAD --
-if %ERRORLEVEL% EQU 0 (
+:: Remove temporary files
+if exist "[Merge]" del /f /q "[Merge]" >nul 2>&1
+
+:: Check if git has changes
+git status --porcelain > "%temp%\git_status.tmp"
+for %%R in ("%temp%\git_status.tmp") do if %%~zR equ 0 (
     echo [Info] No new changes detected. Everything is up to date!
+    del "%temp%\git_status.tmp" >nul 2>&1
     goto :DONE
 )
+del "%temp%\git_status.tmp" >nul 2>&1
 
-echo [Commit] Saving your notes...
+echo [1/3] Staging and committing changes...
+git add .
 git commit -m "Update notes: %date% %time%"
 
-echo [Push] Pushing to GitHub...
-git push origin main
+echo.
+echo [2/3] Pushing to remote sync branch...
+git push -f origin HEAD:sync
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [Error] Push failed. Please check network or GitHub permissions.
+    pause
+    goto :EOF
+)
 
 echo.
+echo [3/3] Push succeeded! Opening GitHub PR page in your browser...
 echo ========================================================
-echo   Success! Pushed to GitHub.
-echo   Online site: https://sbhinx.github.io
-echo   (GitHub Actions is building your site now)
+echo   In the opened browser page, simply click:
+echo   1. Click green [Create pull request]
+echo   2. Click [Merge pull request]
+echo   Once merged, GitHub Actions will deploy your site!
 echo ========================================================
+
+start "" "https://github.com/sbhinx/sbhinx.github.io/compare/main...sync?expand=1"
 
 :DONE
 echo.
