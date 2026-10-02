@@ -3,33 +3,45 @@ setlocal
 cd /d "%~dp0"
 
 echo ========================================================
-echo   [PublishOnGitHubPage] 正在检查本地笔记变动 (PR 保护模式)...
+echo   [PublishOnGitHubPage] Syncing notes via PR Mode...
 echo ========================================================
 
-git add .
-git diff-index --quiet HEAD --
-if %ERRORLEVEL% EQU 0 (
-    echo [提示] 笔记没有新变动，无需提交。
+:: Remove temporary files
+if exist "[Merge]" del /f /q "[Merge]" >nul 2>&1
+
+:: Check if git has changes
+git status --porcelain > "%temp%\git_status.tmp"
+for %%R in ("%temp%\git_status.tmp") do if %%~zR equ 0 (
+    echo [Info] No new changes detected. Everything is up to date!
+    del "%temp%\git_status.tmp" >nul 2>&1
     goto :DONE
 )
+del "%temp%\git_status.tmp" >nul 2>&1
 
-echo [提交] 正在保存修改...
+echo [1/3] Staging and committing changes...
+git add .
 git commit -m "Update notes: %date% %time%"
 
-echo [分支] 正在推送到 content-sync 发布分支...
-git checkout -B content-sync >nul 2>&1
-git push -f origin content-sync
+echo.
+echo [2/3] Pushing to remote sync branch...
+git push -f origin HEAD:sync
+if %ERRORLEVEL% neq 0 (
+    echo.
+    echo [Error] Push failed. Please check network or GitHub permissions.
+    pause
+    goto :EOF
+)
 
 echo.
+echo [3/3] Push succeeded! Opening GitHub PR page in your browser...
 echo ========================================================
-echo   已成功推送到 content-sync 分支！
-echo   正在为你自动打开 GitHub PR 审核页面...
+echo   In the opened browser page, simply click:
+echo   1. Click green [Create pull request]
+echo   2. Click [Merge pull request]
+echo   Once merged, GitHub Actions will deploy your site!
 echo ========================================================
 
-start "" "https://github.com/sbhinx/sbhinx.github.io/pull/new/content-sync"
-
-git checkout main >nul 2>&1
+start "" "https://github.com/sbhinx/sbhinx.github.io/compare/main...sync?expand=1"
 
 :DONE
 echo.
-echo 操作完成！在网页中点击 [Create pull request] -> [Merge] 即可正式上线。
