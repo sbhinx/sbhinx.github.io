@@ -1,4 +1,4 @@
-﻿---
+---
 title: AUTOSAR_SWS_OS
 tags:
   - 嵌入式
@@ -55,6 +55,7 @@ AUTOSAR OS 应提供一个与OSEK操作系统API向后兼容的API。此外，AU
 **2.废除 OSEK COM**
 - 传统OSEK OS的内部消息传递接口全部被废除；
 - AUTOSAR架构中，跨任务/模块的通信全权由RTE和COM模块负责。
+
 **3.取消OSEK中硬编码的 RES_SCHEDULER**
 - OSEK 中无论用不用，系统都默认内置最高优先级的调度锁 `RES_SCHEDULER`；
 - AUTOSAR 认为特殊硬编码会破坏统一的时间保护，因此将它视同为普通 Resource，仅在配置需要时才通过工具链生成。
@@ -69,6 +70,7 @@ AUTOSAR OS 应提供一个与OSEK操作系统API向后兼容的API。此外，AU
 
 **4.废除`DeclareTask()`等宏的实际功能**
 - 保持向上兼容。但这些宏在AUTOSAR OS的工程中不会起任何作用。
+
 **5.允许系统启动前停机后的中断控制**
 - 原有OESK OS仅允许在`startOS()`之后以及`ShutdownOS()`之前调用OS API(比如关中断)。
 > [!NOTE] 背景
@@ -102,12 +104,14 @@ AUTOSAR OS 应提供一个与OSEK操作系统API向后兼容的API。此外，AU
 
 [^1]: Infineon AURIX™ TC2xx / TC3xx Family User's Manual: Reset Control Unit (RCU) / System Control Unit (SCU) - Warm Reset & Pin State Transitions & Interrupt Router (IR)
 
-**5.Alarm 到期支持累加软件计数器**
+**6.Alarm 到期支持累加软件计数器**
 - 操作系统模块必须提供在报警器（Alarm）到期时，**将“递增一个软件计数器”** 作为备选触发动作的能力。
 - 在经典 **OSEK/VDX** 规范中，Alarm 到期后能够触发的动作为如下三种：`ACTIVATETASK`、`SETEVENT`、`ALARMCALLBACK`。AUTOSAR OS 为了打破这一局限，引入了第四种备选动作：`INCREMENTCOUNTER`。这种机制的引入可以更方便地进行软件定时器分频。
-**6.支持开机自启动“绝对时间“报警器(Absolute Alarms)**
+
+**7.支持开机自启动“绝对时间“报警器(Absolute Alarms)**
 - 操作系统模块必须允许在操作系统启动阶段，**自动启动预先配置好的绝对报警器。**
 - 在涉及全局时钟同步、网关网络时间对齐(如 FlexRay / CAN 全局基准时间)的场景下，某些报警器必须固定在时钟周期的某个绝对刻度上触发。AUTOSAR 允许在工具链配置（ARXML 的 `OsAlarmAutostart`）中直接勾选为绝对启动。
-**7.扩展状态下强制防空指针，返回 `E_OS_PARAM_POINTER`**
+
+**8.扩展状态下强制防空指针，返回 `E_OS_PARAM_POINTER`**
 - AUTOSAR 强制要求所有 API 入口必须进行**防空指针防御性校验**，把致命的系统崩溃收敛成一个可控的返回值 `E_OS_PARAM_POINTER`，提升了基础软件的健壮性。
 
