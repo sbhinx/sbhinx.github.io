@@ -494,8 +494,10 @@ pre {
   border: 1px solid var(--lightgray);
   position: relative;
 
-  &:has(> code.mermaid) {
+  &:has(> code.mermaid),
+  &:has(> code[data-language="mermaid"]) {
     border: none;
+    background: transparent;
   }
 
   & > code {
