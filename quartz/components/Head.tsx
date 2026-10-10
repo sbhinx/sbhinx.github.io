@@ -93,6 +93,83 @@ export default (() => {
         <meta name="description" content={description} />
         <meta name="generator" content="Quartz" />
 
+        <script src={joinSegments(baseDir, "static/mermaid.min.js")} type="text/javascript" data-persist="true"></script>
+        <script data-persist="true" dangerouslySetInnerHTML={{
+          __html: `
+            let mermaidRenderIdCounter = 0;
+            async function renderAllMermaid() {
+              if (!window.mermaid) return;
+              const isDark = document.documentElement.getAttribute("saved-theme") === "dark";
+              try {
+                window.mermaid.initialize({
+                  startOnLoad: false,
+                  securityLevel: "loose",
+                  theme: isDark ? "dark" : "default"
+                });
+              } catch (e) {}
+
+              const targets = document.querySelectorAll('pre:has(> code[data-language="mermaid"]), pre:has(> code.mermaid)');
+              for (const pre of targets) {
+                const codeEl = pre.querySelector('code');
+                if (!codeEl) continue;
+
+                if (!pre.dataset.mermaidRaw) {
+                  let raw = codeEl.innerText || codeEl.textContent;
+                  raw = raw.replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&').trim();
+                  pre.dataset.mermaidRaw = raw;
+                }
+
+                let container = pre.nextElementSibling;
+                if (!container || !container.classList.contains('mermaid-diagram-container')) {
+                  container = document.createElement('div');
+                  container.className = 'mermaid-diagram-container';
+                  container.style.display = 'flex';
+                  container.style.justifyContent = 'center';
+                  container.style.margin = '1.5rem 0';
+                  container.style.overflowX = 'auto';
+                  pre.parentNode.insertBefore(container, pre.nextSibling);
+                }
+
+                try {
+                  const id = 'mermaid-svg-' + Date.now() + '-' + (++mermaidRenderIdCounter);
+                  const { svg } = await window.mermaid.render(id, pre.dataset.mermaidRaw);
+                  container.innerHTML = svg;
+                  pre.style.display = 'none';
+                } catch (err) {
+                  console.error("Mermaid diagram render error:", err);
+                }
+              }
+            }
+
+            function triggerMermaid() {
+              if (window.mermaid) {
+                renderAllMermaid();
+              } else {
+                let attempts = 0;
+                const interval = setInterval(() => {
+                  attempts++;
+                  if (window.mermaid) {
+                    clearInterval(interval);
+                    renderAllMermaid();
+                  } else if (attempts > 60) {
+                    clearInterval(interval);
+                  }
+                }, 100);
+              }
+            }
+
+            if (document.readyState === "loading") {
+              document.addEventListener("DOMContentLoaded", triggerMermaid);
+            } else {
+              triggerMermaid();
+            }
+            window.addEventListener("load", triggerMermaid);
+            document.addEventListener("nav", triggerMermaid);
+            document.addEventListener("render", triggerMermaid);
+            document.addEventListener("themechange", triggerMermaid);
+          `
+        }} />
+
         {css.map((resource) => CSSResourceToStyleElement(resource, true))}
         {js
           .filter((resource) => resource.loadTime === "beforeDOMReady")

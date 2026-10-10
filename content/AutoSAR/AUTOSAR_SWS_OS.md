@@ -115,3 +115,76 @@ AUTOSAR OS 应提供一个与OSEK操作系统API向后兼容的API。此外，AU
 **8.扩展状态下强制防空指针，返回 `E_OS_PARAM_POINTER`**
 - AUTOSAR 强制要求所有 API 入口必须进行**防空指针防御性校验**，把致命的系统崩溃收敛成一个可控的返回值 `E_OS_PARAM_POINTER`，提升了基础软件的健壮性。
 
+
+### 2.Software Free Running Timer
+- MCU内部硬件定时器通道数量非常有限。OSEK OS中定时器都是给其内部Alarm(报警器)服务用的。AUTOSAR OS允许软件自由运行定时器。
+- 相对于OESK来说这是提升，对于现代操作系统来说这只是个基操。
+
+| 平台 / 操作系统  | 对应的系统时间 API                            | 本质特征                       |
+| :--------- | :------------------------------------- | :------------------------- |
+| AUTOSAR OS | GetCounterValue()<br>GetElapsedValue() | 单调递增 Tick 时基，专用于耗时测量、超时回绕  |
+| Linux      | clock_gettime(CLOCK_MONOTONIC, &ts)    | 从系统启动开始单调递增，不受系统改时间影响      |
+| Windows    | QueryPerformanceCounter(&ticks)        | 读取 CPU 高精度硬件时间戳，专用于高精度性能测试 |
+| C++ 11     | std::chrono::steady_clock::now()       | 物理时间恒定流逝的稳定单调时钟            |
+### 3.Schedule Tables
+#### 3.1 Background & Structure
+- 传统OESK OS要周期性激活三个任务，其需要配置三个独立的Alarm。引入调度表后，所有的任务激活时机全打包在一条全局时间轴上。调用一个接口就可以实现让整张时间表启动、停止或者切换为另一张表。
+![Time Schedule Table](https://pic1.imgdb.cn/i/034cvbr6eXVzaWQfUnzS8Z.png)
+- 调度表包含**时间轴、到期点、触发动作、延迟计算、周期循环**五大要素。调度表应当至少包含一个到期点。
+- **时间轴：** 囊括了整个调度表的物理周期，其常以Tick的形式存在。Tick对应的物理时间需单独配置(如配置1 Tick = 1ms, 则整表的周期为50ms)。其底层由绑定的时钟计数器(`OsCounter`，如硬件SysTick)按固定节拍驱动。
+- **到期点(Expiry Point):** 图中用若干纵向矩形框表示时间轴上的触发时间点。其中第一个和最后一个分别称为首到期点(Initial Expiry Point)和末到期点(Final Expiry Point)。在时间轴始端到首触发点的偏移量称为初始偏移量(InitialOffset)。同样末到期点至调度表的偏移量则称为终延时(FinalDelay)。中间部分的偏移量则称为Offset。这些偏移量代表了各到期点之间的相对节拍差。
+- 一个到期点包含至少一个待激活任务集合(可为空)和待设置事件集合(可为空)以及一个以Tick为单位、相对调度表起点的OffSet。
+- **触发动作：** 触发动作分为如下两类：激活任务(Task Activations)和设置事件(Event Settings)。同一个到期点中上述两种动作可单独存在也可以同时存在。值得注意的是，同一到期点中，激活任务的优先级总是大于设置事件。任务状态机从`Suspend`/`Waiting`变为`Ready`后，由其优先级来决定执行的先后时序。
+
+> [!NOTE] 关于AUTOSAR OS的两种Task
+> 在 AUTOSAR / OSEK 规范体系中，**激活任务(Task Activation)** 与 **设置事件(Event Setting)** 是两种本质截然不同的调度驱动机制，而它们的分水岭正是 **基本任务(Basic Task)** 与 **扩展任务(Extended Task)** 的状态机差异。
+> 
+> **1. 基本任务 (Basic Task) 的状态机**
+> 基本任务没有等待状态。它一旦被激活进入 Ready 态并抢到 CPU，就必须一口气执行到底（除非被更高优先级的任务抢占），直到自行结束。
+> ```mermaid
+> stateDiagram-v2
+>     direction LR
+>     
+>     [*] --> Suspended : 系统初始化
+>     
+>     Suspended --> Ready : 激活任务(ActivateTask / Alarm触发)
+>     Ready --> Running : 调度器分配CPU(Dispatch)
+>     Running --> Ready : 被高优先级任务抢占(Preempted)
+>     Running --> Suspended : 任务自行终止(TerminateTask)
+> ```
+> 
+> **2. 扩展任务 (Extended Task) 的状态机**
+> 扩展任务比基本任务多出了一个核心的**等待态 (Waiting)**。它允许任务在执行到一半时，主动交出 CPU 并挂起自己，直到某个特定的事件发生。
+> ```mermaid
+> stateDiagram-v2
+>     direction LR
+>     
+>     [*] --> Suspended : 系统初始化
+>     
+>     Suspended --> Ready : 激活任务(ActivateTask / Alarm触发)
+>     Ready --> Running : 调度器分配CPU(Dispatch)
+>     Running --> Ready : 被高优先级任务抢占(Preempted)
+>     
+>     Running --> Waiting : 主动等待事件(WaitEvent)
+>     Waiting --> Ready : 其他实体设置了该事件(SetEvent)
+>     
+>     Running --> Suspended : 任务自行终止(TerminateTask)
+> ```
+> 
+> **核心差异总结：**
+> * **ActivateTask** 是作用于 `Suspended -> Ready` 的状态跃迁，主要用于基本任务的周期性或单次触发。
+> * **SetEvent** 是作用于 `Waiting -> Ready` 的状态跃迁，是扩展任务专属的同步与阻塞唤醒机制。正因为有了 Waiting 态，扩展任务才能实现复杂的资源同步。
+
+- **延迟计算：** 节点间距可以不固定。相邻节点的相对时差称为`Delay`。架构师可根据实际负载调整这些OffSet。以实现削峰填谷。
+- **周期循环：** 如果是周期循环的调度表。则在末到期点和始到期点之间的Delay为InitialOffset+FinalDelay。
+### 3.2 Constraints on Expiry Points
+- 一个到期应至少激活一个任务或者至少设置一个事件。
+- 在给定的调度表上，每个到期点都应当具有唯一的偏移量。对调度表上各个到期点的迭代推进，是由底层的计数器驱动的。`OsCounterMinCycle`(最小循环周期)和`OsCounterMaxAllowedValue`(最大允许计数值)对偏移量构成约束。
+- 同理，相邻到期点之间的延迟也被上述参数约束。
+### 3.3 Processing Schedule Table(调度表运行时处理规则)
+- 单向不可逆。OS模块必须严格按照偏移量从小到大的顺序，从第一个到期点顺序执行到最后一个到期点。不允许跳过和Reverse。
+- 一张调度表只能绑定一个特定的Counter。不能有两个时钟源头同时扯一个表。
+- OS要支持多张调度表并发。同一个底层Counter可以同时拉动多张调度表一起跑。
+- 严格要求在一个到期点先进行激活任务再进行设置事件。
+
+
