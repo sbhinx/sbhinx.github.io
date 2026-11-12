@@ -206,7 +206,7 @@ AUTOSAR OS 应提供一个与OSEK操作系统API向后兼容的API。此外，AU
 ### 3.5 调度表同步
 - 本地Counter模数于调度表周期不一定整除，其会导致调度表的到期点实际执行时的绝对计数值发生变化。且存在不以本地ECU时钟为基准推进的调度表(如通过角度同步，网络全局时间同步)。因此，必须让调度表的推进与某个 **“特定的绝对计数值 / 全局时钟”** 锁定，这就叫做 调度表同步。
 - AUTOSAR OS提供了两种调度表同步模式：
-- **隐式同步(Implicit Synchronization)**：直接把同步时钟源本身当作驱动调度表的 Counter。即底层硬件负责管理网络时间同步，并仅向操作系统提供一个用于输出或者比较的时间定时器接口。此种同步模式下，调度表的状态机可参考如下：
+- **隐式同步(Implicit Synchronization)**：直接把同步时钟源本身当作驱动调度表的 Counter。即底层硬件负责管理网络时间同步，并仅向操作系统提供一个用于输出或者比较的时间定时器接口。(一般是外设硬件时钟。)此种同步模式下，调度表的状态机可参考如下：
 ```mermaid
 
 stateDiagram-v2
@@ -233,6 +233,9 @@ SCHEDULETABLE_NEXT --> SCHEDULETABLE_STOPPED: StopScheduleTable()
 
 SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS --> SCHEDULETABLE_STOPPED: StopScheduleTable()
 ```
+- 隐式同步纯靠“硬件数满一圈，调度表也刚好跑满一圈”来实现永久对齐。两个齿轮的齿数必须一模一样`Duration == MaxAllowedValue + 1`
+- 隐式同步的调度表严禁相对启动，只允许绝对启动。
+
 - **显式同步(Explicit Synchroization)：** 本地驱动调度表的硬件定时器叫 **OS Counter**，而总线上需要对齐的全局基准时间在概念上称为 **Synchronization Counter**。显式同步的本质，就是用软件算法让本地 OS Counter 推进的调度表，去对齐外部的 Synchronization Counter。因此AUTOSAR OS提供了一些特性以保证System Counter与Sync Counter 的同步。具体而言，操作系统通过动态调整调度表里的各个到期点的的触发时机(可调节到期点，Adjustable Expiry Points)，来保证同步。此种模式下，调度表状态机如下：
 ```mermaid
 
@@ -288,15 +291,55 @@ SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS --> SCHEDULETABLE_STOPPED: StopScheduleTab
 - **阶段一：** 启动起跑有三种选择(从`SCHEDULETABLE_STOPPED`状态出发)。
 	- 路线A：调用`StartScheduleTableSynchron()`进入状态`SCHEDULETABLE_WAITING`。其意图为等待拿到总线时间标准时间并严格对齐后再开始跑表。
 	- 路线B：调用`StartScheduleTableAbs()/StartScheduleTableRel()`进入状态`SCHEDULETABLE_RUNNING`。其意图为不管总线上是否有全局时间信息，本地任务现在就要跑起来。注意这里的状态没有`_AND_SYNCHRONOUS`后缀，代表没有全局同步过。注意与隐式同步的差别。*Abs和Rel后缀代表绝对时间和相对时间启动。*
-	- 路线C：调用`NextScheduleTable()`进入状态`SCHEDULETABLE_NEXT`。其意图为将该表手动安排在某张表执行完成之后开始调用。**注意，下一个表的状态并不会继承上一个表，而是从`SCHEDULETABLE_STOPPED`开始。**
+	- 路线C：调用`NextScheduleTable()`进入状态`SCHEDULETABLE_NEXT`。其意图为将该表手动安排在某张表执行完成之后开始调用。**注意，下一个表的状态并不会继承上一个表，而是从`SCHEDULETABLE_STOPPED`开始，并立即转移到`SCHEDULETABLE_RUNNING`。**
 - **阶段二：** 此阶段可分为两个路径
 	- ==🟢路线A==：当系统收到总线时间后，调用`SyncScheduleTable()`。从状态`SCHEDULETABLE_WATING`开始跑，状态转移到`SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS`。此时调度表开始执行，且此时的状态带有同步，也就是这个调度表是基于总线时间同步来跑的。
-	- 路线B：从`SCHEDULETABLE_RUNNING`对齐。调度表已经在自由游走，但其并无与总线具有同步的时钟关系。外部模块(通常是StbM、BswM、CDD)周期调用`SyncScheduleTable()`来尝试同步。在此期间，OS会做如下步骤：(1)读取本地调度表当前时间走到的表内相对偏移量(localCounterVar)。(2)归一化总线时间：将总线上的绝对时间(GlobalTimeVar)相对调度表周期取模，算出全局时间在表内对应的目标相位点(TargetVar)。(3)顺利成章地，OS可以计算出总线时间和本地时间的偏差(Deviation)。(4)==🟢如果调度表处于**路线A**中的`SCHEDULETABLE_WATING`状态。则OS可以直接强行把调度表时刻指针拨到目标相位点，然后直接宣布这个调度表进入`SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS`状态。==  若此时调度表处于如果当前处于 `SCHEDULETABLE_RUNNING`。则OS会去检查Deviation是否大于容忍的时间误差PRESICION之内。以便决定是否将状态升级到`SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS`。还是尝试继续同步时间。
+	- 路线B：从`SCHEDULETABLE_RUNNING`对齐。调度表已经在自由游走，但其并无与总线具有同步的时钟关系。外部模块(通常是StbM、BswM、CDD)周期调用`SyncScheduleTable()`来尝试同步。在此期间，OS会做如下步骤：(1)读取本地调度表当前时间走到的表内相对偏移量(localCounterVar)。(2)归一化总线时间：将总线上的绝对时间(GlobalTimeVar)相对调度表周期取模，算出全局时间在表内对应的目标相位点(TargetVar)。(3)顺利成章地，OS可以计算出总线时间和本地时间的偏差(Deviation)。(4)==🟢如果调度表处于 `WAITING` 状态，OS 在收到第一帧全局时间 Value 后，直接根据规范公式 Delay=(Duration−Value)+InitialOffset算出首个到期点的触发延迟，等待该延迟走完即精准完成相位对齐，并宣布调度表进入 `SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS`。==  若此时调度表处于如果当前处于 `SCHEDULETABLE_RUNNING`。则OS会去检查Deviation是否大于容忍的时间误差PRESICION之内。以便决定是否将状态升级到`SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS`。还是尝试继续同步时间。
 
 > [!NOTE] OS具体是如何做调整的呢？
 > `SyncScheduleTable()`函数并不直接参与调度表的调频。实际的调整是由OS定时器中断在后台异步推进的。当`SyncScheduleTable()`计算出实际偏差Deviation时，会存入该调度表的OS控制块上下文变量中。直到下一次调度表开始时(注意这个调整绝不会在当前这个调度表的完整周期内生效。)在后续的每一次调度周期中，当 Counter 的硬件定时器中断触发、推进到配置了 **Adjustable Expiry Point（可调节到期点）** 的位置时，OS 调度器会从控制块中取出先前计算的偏差值。OS根据延后还是超前来判定，将这个到期点与下一个到期点之间的等待延迟缩短还是增长。缩短和增长不超过该可调节到期点配置的`OsScheduleTableMaxShorten`和`OsScheduleTableMaxLengthen`。**另外，各个到期点的物理执行顺序不会因为调整而被打乱顺序。**这种微调可能持续几个完整调度表周期，直到时间误差在PRESICION内。调整量的计算方法可参照**“Explicit Synchronization & Adjustment Algorithm”**。
+
+
 
 - **阶段三：** 失步和退化
 	- 调度表进入 `SCHEDULETABLE_RUNNING_AND_SYNCHRONOUS` 之后，并不是高枕无忧的。图中有两根向下的退化线指回 `SCHEDULETABLE_RUNNING`。当总线时间和本地时间误差超过PRESICION时，OS会立即将其降回`SCHEDULETABLE_RUNNING`，并尝试再次同步。另一种则是主动调用`SetScheduleTableAsync()`以退出与全局时钟的同步。**该 API 只能在 `RUNNING_AND_SYNCHRONOUS` 或 `RUNNING` 状态下调用。** 注意，OS是一个**受控对象**，他不会主动去检查是否同步。都是外部模块调用函数主动检查或者直接Async。OS在这里只有调整可调节到期点的能力。
 - **其他：** 这部分主要讲述各种状态如何回退到`SCHEDULETABLE_STOPPED`。如状态机图所示，各种状态均可通过调用`StopScheduleTable()`主动回到`SCHEDULETABLE_STOPPED`。==🟡注意：单次表会自动在FinalDelay结束后回到`SCHEDULETABLE_STOPPED`。此处未在状态机图中直接表现。==
 
+
+### 3.6 堆栈监控设施
+- 对于不提供内存保护硬件的MCU上(如SC1/SC2模式下的AUTOSAR)，仍然需要一种“best effort with available resources”(尽力而为)的机制来检测可发现的内存故障。AUTOSAR OS栈监控能在上下文切换时识别出某个任务或者中断服务例程的栈用量是否超过了阈值。这种机制的问题在于栈溢出发生时，其无法及时抛出异常(MPU会内存异常直接进Trap)。
+- 仅仅监控整个系统的全局栈空间是不够的。因为栈溢出发生时，正在执行的那个TASK或者ISR很有可能是背锅侠。也许他们是计划内的。真正的罪魁祸首在于之前被抢占了的低优先级TASK或者ISR。因此，AUTOSAR OS要求必须按照TASK/ISR单独划定并监控各自的栈用量的上限。这样，当发生栈溢出时，AUTOSAR OS能立即定位出具体是那个Task/Cat2 ISR栈溢出。以便节约Debug的时间。
+- 无论是软件栈监控还是硬件 MPU，本质上都是运行时的**事后止损/安全隔离手段**。真在实车上触发了它们，往往意味着轻则分区重启、重则 `ShutdownOS()` 宕机。因此要上静态分析手段。尽可能把这些问题扼杀在软件集成阶段。
+- 如果是SC3/SC4，栈溢出可能会在Stack Monitor检测到故障之前，便触发内存异常。也就是MPU提前起作用了。
+- `[SWS_OS_00067]`OS模块必须提供栈监控功能，以便用于检测Task/Cat 2 ISR可能发生的栈故障。
+- `[SWS_OS_00068]`如果栈溢出错误发生，且没有配置`ProtectionHook()`。那么操作系统模块会调用`ShutdownOS()`服务并传入`E_OS_STACK_FAULT`。
+- `[SWS_OS_00396]`如果栈溢出错误发生，且配置了`ProtectionHook()`，那么操作系统模块会调用这个Hook并传入`E_OS_STACK_FAULT`。
+
+> [!NOTE] 关于函数`ProtectionHook()`和`ShutdownOS()`
+> ```
+> ProtectionReturnType ProtectionHook(StatusType Fatalerror);
+> //fatal error：OS告诉Hook死因，然后Hook做处理
+> ```
+> 
+> ```
+> void ShutdownOS(StatusType Error);
+> //error：纯记录遗言的
+>``` 
+### 3.7 OS-Application
+#### 3.7.1 背景
+- AUTOSAR OS必须能够支持一组操作系统对象(Tasks、ISRs、Alarms、Schedule Tables、Counters)。这些对象共同构成一个功能完整的单元。其被称为OS-Application。
+- 操作系统模块负责在共享处理器OS-App之间对可用资源进行调度。如果启用了OS-App。则系统里的所有操作系统对象均应有其对应归属的OS-App。即配置工具中都会配一个所归属的OS-App。注意Resource(一种用于单核任务/中断间互斥保护的轻量级互斥锁)和SpinLock不归属任何OS-App。此外，同一个OS-App里的资源对象可以互相访问。如果需要跨OS-App访问，则需在配置工具里单独配置白名单`AccessingApplication`。如果强行在配置工具配置，则无法Generate。如果手写代码则返回`E_OS_ACCESS`。
+- OS-Application主要分为以下两类：受信任的OS-App和非受信任的OS-App。做这个区分主要还是对应上ISO 26262功能安全里的Freedom From Interface思想。
+- 信任分区OS-App：此类任务通常为经过严格认证的核心组件。如AUTOSAR OS、BSW、MCAL Cat1 ISR以及ASIL-D等级的控制软件。OS对此类的任务的态度为完全信任，以换取最高的执行效率。此类任务可以**不受限制地访问内存和操作系统模块的API**。在处理器允许的情况下，其被允许**以特权模式运行**(ARM：`nPRIV`, TriCore：`supervisor`)。操作系统**默认这类OS-App不会引发内存相关的保护故障**。如果发生此类故障，系统稳定性很有可能会遭到破坏。此时的**应对措施只能是关机重启**。
+- 非信任分区OS-App：此类任务通常为QM安全等级或者低等ASIL等级的业务SWC。OS默认此类App不受信任，故对其有一定限制。在运行时，其不被允许在监控(这里主要指栈监控)或防护功能(指Protection Facilities)被禁用的情况下运行。其对内存的访问遭到限制(在EcuC里配Partrition，由MPU来防止内存越界访问)。对操作系统**API的访问也受到限制**(启用SC3/4、禁用`OsTrusted`、在`AccessingApplication`配置某些系统资源的访问权限)。执行时间/时序行为在运行时受到强制约束。其也不被以特权模式运行。
+
+| 对比维度            | Trusted OS-Application（信任分区）                                                                | Non-Trusted OS-Application（非信任分区）                          |
+| :-------------- | :------------------------------------------------------------------------------------------ | :--------------------------------------------------------- |
+| **运行时监控与保护开关**  | **允许关闭**（可在运行时禁用监控与保护特性）                                                                    | **禁止关闭**（运行时必须强制开启监控与保护特性）                                 |
+| **内存访问权限 **     | 可拥有**无限制的**内存访问权限                                                                           | **严格受限**（仅能访问自身及明确授权的内存区）                                  |
+| **OS API 调用权限** | 可拥有**无限制的** OS API 访问权限                                                                     | **严格受限**（受 Service Protection 限制，越权即拦截）                    |
+| **时间行为保护 **     | 运行时**无需强制**执行时间监控与保护                                                                        | 运行时**必须强制**执行时间保护（预算/到达率/锁时长）                              |
+| **CPU 运行模式**    | 若硬件支持，允许运行在 **特权模式 (Privileged Mode)**                                                      | 若硬件支持，**禁止**运行在特权模式（只能跑在用户态）                               |
+| **故障假设与兜底后果**   | OS 默认 Trusted 分区（及 Trusted Functions）**不会引发内存保护故障**；一旦发生，系统稳定性通常已丧失，往往只能 **`ShutdownOS()`** | 允许犯错并被硬件/OS 拦截，可由 `ProtectionHook` 仅强杀或重启该分区，**不影响系统整体存活** |
+- OS内核自己必须跑在硬件特权模式，因为“裁判”必须是可信的。
+- **防“代理越权”的探测服务：** 如果不受信任的`APP_QM`调用了受信任的`APP_BSW`中的特权函数`Trusted_ReadData(uint8* pOutBuf)`。其要求将数据写入`pOutBuf`.如果`pOutBuf`被恶意指定到`APP_ASILD`的内存地址，而进去`Trusted_xx()`后CPU拥有全内存写入权限。如果此时不加检查就直接写，就等于`APP_QM`借`APP_BSW`破坏了`APP_ASILD`的内存。为避免上述情况的发生。OS提供了两套探测服务：
